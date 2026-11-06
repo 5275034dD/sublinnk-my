@@ -3,7 +3,7 @@ import { createStableProviderName, deepCopy, tryDecodeSubscriptionLines, decodeB
 import { createTranslator } from '../i18n/index.js';
 import { generateRules, getOutbounds, PREDEFINED_RULE_SETS } from '../config/index.js';
 
-// 内部高兼容性 HY2 解析器
+// 内部高兼容性 HY2 直通解析（备用兜底）
 function parseHysteria2Direct(urlStr) {
     try {
         const { addressPart, params, name } = parseUrlParams(urlStr);
@@ -38,38 +38,6 @@ function parseHysteria2Direct(urlStr) {
     } catch (e) {
         return null;
     }
-}
-
-// 辅助：将 Clash 格式的代理对象转换为内部标准对象
-function convertClashProxyToInternal(proxy) {
-    if (!proxy || typeof proxy !== 'object') return null;
-    const type = proxy.type;
-    
-    if (type === 'hysteria2' || type === 'hy2') {
-        return {
-            tag: proxy.name || `${proxy.server}:${proxy.port}`,
-            type: 'hysteria2',
-            server: proxy.server,
-            server_port: proxy.port,
-            password: proxy.password || proxy.auth || '',
-            up: proxy.up,
-            down: proxy.down,
-            obfs: proxy.obfs ? { type: proxy.obfs, password: proxy['obfs-password'] } : undefined,
-            tls: {
-                enabled: true,
-                server_name: proxy.sni || proxy.server,
-                insecure: !!proxy['skip-cert-verify'],
-            },
-            alpn: proxy.alpn,
-        };
-    }
-    return {
-        tag: proxy.name || proxy.tag,
-        type: proxy.type,
-        server: proxy.server,
-        server_port: proxy.port || proxy.server_port,
-        ...proxy
-    };
 }
 
 export class BaseConfigBuilder {
@@ -112,10 +80,9 @@ export class BaseConfigBuilder {
                 if (!trimmedUrl) continue;
 
                 let result = null;
-                if (trimmedUrl.startsWith('hy2://') || trimmedUrl.startsWith('hysteria2://')) {
-                    result = parseHysteria2Direct(trimmedUrl);
-                } else if (trimmedUrl.startsWith('http://') || trimmedUrl.startsWith('https://')) {
-                    // 处理远程订阅链接
+
+                // 1. 处理 HTTP(S) 远程订阅链接
+                if (trimmedUrl.startsWith('http://') || trimmedUrl.startsWith('https://')) {
                     try {
                         const { fetchSubscriptionWithFormat } = await import('../parsers/subscription/httpSubscriptionFetcher.js');
                         const fetchResult = await fetchSubscriptionWithFormat(trimmedUrl, this.userAgent);
@@ -130,55 +97,52 @@ export class BaseConfigBuilder {
                                 continue;
                             }
 
-                            // 🟢 核心增强：对远程抓取的内容进行 Base64 深度解码与明文多行提取
-                            let rawContent = content;
-                            try {
-                                const decodedBase64 = decodeBase64(content.replace(/\s+/g, ''));
-                                if (decodedBase64 && (decodedBase64.includes('://') || decodedBase64.includes('proxies:'))) {
-                                    rawContent = decodedBase64;
-                                }
-                            } catch (_) {}
+                            // 🟢 核心增强：对远程订阅返回的内容进行 Base64 自动解码与分行提取
+                            const decodedLines = tryDecodeSubscriptionLines(content, { decodeUriComponent: true });
+                            const lineArray = Array.isArray(decodedLines) ? decodedLines : [decodedLines];
 
-                            // 按行解析可能包含的明文协议链接
-                            const lines = rawContent.split('\n').map(l => l.trim()).filter(Boolean);
-                            for (const line of lines) {
-                                if (line.startsWith('hy2://') || line.startsWith('hysteria2://')) {
-                                    const hy2Item = parseHysteria2Direct(line);
-                                    if (hy2Item) parsedItems.push(hy2Item);
-                                } else if (line.includes('://')) {
-                                    const parsedItem = await ProxyParser.parse(line, this.userAgent);
-                                    if (parsedItem) parsedItems.push(parsedItem);
+                            for (const line of lineArray) {
+                                const cleanLine = typeof line === 'string' ? line.trim() : '';
+                                if (!cleanLine || !cleanLine.includes('://')) continue;
+
+                                let parsedProxy = null;
+                                if (cleanLine.startsWith('hy2://') || cleanLine.startsWith('hysteria2://') || cleanLine.startsWith('hysteria://')) {
+                                    parsedProxy = parseHysteria2Direct(cleanLine);
+                                } else {
+                                    parsedProxy = await ProxyParser.parse(cleanLine, this.userAgent);
+                                }
+
+                                if (parsedProxy) {
+                                    if (Array.isArray(parsedProxy)) {
+                                        parsedItems.push(...parsedProxy);
+                                    } else {
+                                        parsedItems.push(parsedProxy);
+                                    }
                                 }
                             }
 
-                            // 同时使用内容解析器处理 YAML/JSON 格式的订阅
+                            // 同时兼容 YAML/JSON 格式的订阅内容解析
                             const { parseSubscriptionContent } = await import('../parsers/subscription/subscriptionContentParser.js');
-                            const subContentResult = parseSubscriptionContent(rawContent);
-                            if (subContentResult) {
-                                if (Array.isArray(subContentResult.proxies)) {
-                                    subContentResult.proxies.forEach(p => {
-                                        const converted = convertClashProxyToInternal(p);
-                                        if (converted) parsedItems.push(converted);
-                                    });
-                                } else if (Array.isArray(subContentResult)) {
-                                    subContentResult.forEach(item => {
-                                        if (typeof item === 'string') {
-                                            if (item.startsWith('hy2://') || item.startsWith('hysteria2://')) {
-                                                const h = parseHysteria2Direct(item);
-                                                if (h) parsedItems.push(h);
-                                            }
-                                        } else if (item && item.tag) {
-                                            parsedItems.push(item);
-                                        }
-                                    });
-                                }
+                            const subContentResult = parseSubscriptionContent(content);
+                            if (subContentResult && Array.isArray(subContentResult.proxies)) {
+                                subContentResult.proxies.forEach(p => {
+                                    if (p && (p.tag || p.name)) {
+                                        parsedItems.push(p);
+                                    }
+                                });
                             }
                         }
                     } catch (e) {
                         console.error('Error fetching remote subscription:', e);
                     }
                     continue;
-                } else {
+                } 
+                // 2. 处理单条 hy2 / hysteria2 链接
+                else if (trimmedUrl.startsWith('hy2://') || trimmedUrl.startsWith('hysteria2://') || trimmedUrl.startsWith('hysteria://')) {
+                    result = parseHysteria2Direct(trimmedUrl);
+                } 
+                // 3. 处理其他单条协议链接
+                else {
                     result = await ProxyParser.parse(trimmedUrl, this.userAgent);
                 }
 
@@ -274,7 +238,7 @@ export class BaseConfigBuilder {
     addCustomItems(customItems) {
         const validItems = customItems.filter(item => item != null);
         validItems.forEach(item => {
-            if (item?.tag) {
+            if (item?.tag || item?.name) {
                 const convertedProxy = this.convertProxy(item);
                 if (convertedProxy) {
                     this.addProxyToConfig(convertedProxy);
