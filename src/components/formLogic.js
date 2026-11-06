@@ -2,6 +2,7 @@ export const formLogicFn = (t) => {
     window.formData = function () {
         return {
             input: '',
+            customUA: '',
             showAdvanced: false,
             selectedRules: [],
             selectedPredefinedRule: 'balanced',
@@ -30,10 +31,14 @@ export const formLogicFn = (t) => {
                     this.showFullLinksText = window.APP_TRANSLATIONS.showFullLinks;
                 }
                 this.input = localStorage.getItem('inputTextarea') || '';
+                this.customUA = localStorage.getItem('userAgent') || '';
                 this.applyPredefinedRule();
 
                 this.$watch('input', val => {
                     localStorage.setItem('inputTextarea', val);
+                });
+                this.$watch('customUA', val => {
+                    localStorage.setItem('userAgent', val || '');
                 });
             },
 
@@ -53,6 +58,13 @@ export const formLogicFn = (t) => {
                     const params = new URLSearchParams();
                     params.append('config', this.input);
                     params.append('selectedRules', JSON.stringify(this.selectedRules));
+
+                    // The UA is sent to the panel when fetching the subscription:
+                    // panels serve hysteria2 only to clients they recognize.
+                    if (this.customUA && this.customUA.trim()) params.append('ua', this.customUA.trim());
+                    // Inline a Clash YAML subscription as proxies instead of
+                    // referencing it as a proxy-provider, so its nodes land in the output.
+                    params.append('inline', 'true');
 
                     if (this.groupByCountry) params.append('group_by_country', 'true');
                     if (!this.includeAutoSelect) params.append('include_auto_select', 'false');
