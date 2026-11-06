@@ -3,7 +3,7 @@ import { createStableProviderName, deepCopy, tryDecodeSubscriptionLines, decodeB
 import { createTranslator } from '../i18n/index.js';
 import { generateRules, getOutbounds, PREDEFINED_RULE_SETS } from '../config/index.js';
 
-// 兜底直通解析 HY2
+// 内部高兼容性 HY2 直通解析（备用兜底）
 function parseHysteria2Direct(urlStr) {
     try {
         const { addressPart, params, name } = parseUrlParams(urlStr);
@@ -41,7 +41,7 @@ function parseHysteria2Direct(urlStr) {
 }
 
 export class BaseConfigBuilder {
-    constructor(inputString, baseConfig, lang, userAgent, groupByCountry = false, includeAutoSelect = true) {
+    constructor(inputString, baseConfig, lang, userAgent, groupByCountry = false, includeAutoSelect = true, inlineProviderContent = false) {
         this.inputString = inputString;
         this.config = deepCopy(baseConfig);
         this.customRules = [];
@@ -51,6 +51,9 @@ export class BaseConfigBuilder {
         this.appliedOverrideKeys = new Set();
         this.groupByCountry = groupByCountry;
         this.includeAutoSelect = includeAutoSelect;
+        // When true, a Clash YAML subscription is inlined as proxies instead of
+        // being referenced as a proxy-provider, so converters output the nodes.
+        this.inlineProviderContent = inlineProviderContent;
         this.providerUrls = [];
         this.providerNodeNames = [];
         this.autoProviderDescriptors = undefined;
@@ -67,24 +70,10 @@ export class BaseConfigBuilder {
     async parseCustomItems() {
         const input = this.inputString || '';
         const parsedItems = [];
-        const { parseSubscriptionContent } = await import('../parsers/subscription/subscriptionContentParser.js');
 
-        // 1. 尝试直接作为整体内容解析（如完整的 Sing-box JSON 或 Clash YAML）
-        const directResult = parseSubscriptionContent(input);
-        if (directResult && typeof directResult === 'object' && directResult.type) {
-            if (directResult.config) this.applyConfigOverrides(directResult.config);
-            if (Array.isArray(directResult.proxies)) {
-                directResult.proxies.forEach(p => {
-                    if (p && (p.tag || p.name)) parsedItems.push(p);
-                });
-                if (parsedItems.length > 0) return parsedItems;
-            }
-        }
-
-        // 2. 按行/按链接处理
-        const urls = input.split('\n').map(u => u.trim()).filter(Boolean);
+        const urls = input.split('\n').filter(url => url.trim() !== '');
         for (const url of urls) {
-            let processedUrls = tryDecodeSubscriptionLines(url, { decodeUriComponent: true });
+            let processedUrls = tryDecodeSubscriptionLines(url);
             if (!Array.isArray(processedUrls)) {
                 processedUrls = [processedUrls];
             }
@@ -93,7 +82,9 @@ export class BaseConfigBuilder {
                 const trimmedUrl = typeof processedUrl === 'string' ? processedUrl.trim() : '';
                 if (!trimmedUrl) continue;
 
-                // A. 远程 HTTP(S) 订阅链接
+                let result = null;
+
+                // 1. 处理 HTTP(S) 远程订阅链接
                 if (trimmedUrl.startsWith('http://') || trimmedUrl.startsWith('https://')) {
                     try {
                         const { fetchSubscriptionWithFormat } = await import('../parsers/subscription/httpSubscriptionFetcher.js');
@@ -103,58 +94,70 @@ export class BaseConfigBuilder {
                             if (subscriptionUserinfo && !this.subscriptionUserinfo) {
                                 this.subscriptionUserinfo = subscriptionUserinfo;
                             }
-                            if (this.isCompatibleProviderFormat(format)) {
+                            // Provider mode is skipped when inline output is requested:
+                            // the YAML content is then parsed inline below instead.
+                            if (this.isCompatibleProviderFormat(format) && !this.inlineProviderContent) {
                                 this.providerUrls.push(originalUrl);
                                 await this.collectProviderNodeNames(content);
                                 continue;
                             }
 
-                            // 交给官方订阅解析器处理远端内容
-                            const remoteResult = parseSubscriptionContent(content);
-                            if (remoteResult) {
-                                if (Array.isArray(remoteResult.proxies)) {
-                                    remoteResult.proxies.forEach(p => {
-                                        if (p && (p.tag || p.name)) parsedItems.push(p);
-                                    });
-                                } else if (Array.isArray(remoteResult)) {
-                                    remoteResult.forEach(item => {
-                                        if (typeof item === 'string') {
-                                            if (item.startsWith('hy2://') || item.startsWith('hysteria2://')) {
-                                                const h = parseHysteria2Direct(item);
-                                                if (h) parsedItems.push(h);
-                                            } else {
-                                                ProxyParser.parse(item, this.userAgent).then(res => {
-                                                    if (res) parsedItems.push(res);
-                                                });
-                                            }
-                                        } else if (item && (item.tag || item.name)) {
-                                            parsedItems.push(item);
-                                        }
-                                    });
+                            // 🟢 核心增强：对远程订阅返回的内容进行 Base64 自动解码与分行提取
+                            const decodedLines = tryDecodeSubscriptionLines(content, { decodeUriComponent: true });
+                            const lineArray = Array.isArray(decodedLines) ? decodedLines : [decodedLines];
+
+                            for (const line of lineArray) {
+                                const cleanLine = typeof line === 'string' ? line.trim() : '';
+                                if (!cleanLine || !cleanLine.includes('://')) continue;
+
+                                let parsedProxy = null;
+                                if (cleanLine.startsWith('hy2://') || cleanLine.startsWith('hysteria2://') || cleanLine.startsWith('hysteria://')) {
+                                    parsedProxy = parseHysteria2Direct(cleanLine);
+                                } else {
+                                    parsedProxy = await ProxyParser.parse(cleanLine, this.userAgent);
                                 }
+
+                                if (parsedProxy) {
+                                    if (Array.isArray(parsedProxy)) {
+                                        parsedItems.push(...parsedProxy);
+                                    } else {
+                                        parsedItems.push(parsedProxy);
+                                    }
+                                }
+                            }
+
+                            // 同时兼容 YAML/JSON 格式的订阅内容解析
+                            const { parseSubscriptionContent } = await import('../parsers/subscription/subscriptionContentParser.js');
+                            const subContentResult = parseSubscriptionContent(content);
+                            if (subContentResult && Array.isArray(subContentResult.proxies)) {
+                                subContentResult.proxies.forEach(p => {
+                                    if (p && (p.tag || p.name)) {
+                                        parsedItems.push(p);
+                                    }
+                                });
                             }
                         }
                     } catch (e) {
-                        console.error('Remote sub fetch error:', e);
+                        console.error('Error fetching remote subscription:', e);
                     }
                     continue;
+                } 
+                // 2. 处理单条 hy2 / hysteria2 链接
+                else if (trimmedUrl.startsWith('hy2://') || trimmedUrl.startsWith('hysteria2://') || trimmedUrl.startsWith('hysteria://')) {
+                    result = parseHysteria2Direct(trimmedUrl);
+                } 
+                // 3. 处理其他单条协议链接
+                else {
+                    result = await ProxyParser.parse(trimmedUrl, this.userAgent);
                 }
 
-                // B. 单条 hy2 链接
-                if (trimmedUrl.startsWith('hy2://') || trimmedUrl.startsWith('hysteria2://') || trimmedUrl.startsWith('hysteria://')) {
-                    const h = parseHysteria2Direct(trimmedUrl);
-                    if (h) parsedItems.push(h);
-                    continue;
-                }
-
-                // C. 其他单条协议链接
-                try {
-                    const singleResult = await ProxyParser.parse(trimmedUrl, this.userAgent);
-                    if (singleResult) {
-                        if (Array.isArray(singleResult)) parsedItems.push(...singleResult);
-                        else parsedItems.push(singleResult);
+                if (result) {
+                    if (Array.isArray(result)) {
+                        parsedItems.push(...result);
+                    } else {
+                        parsedItems.push(result);
                     }
-                } catch (_) {}
+                }
             }
         }
         return parsedItems;
