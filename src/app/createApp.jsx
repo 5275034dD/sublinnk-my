@@ -149,6 +149,10 @@ export function createApp(bindings = {}) {
                 baseConfig = await storage.getConfigById(configId);
             }
 
+            // inline=true: inline a Clash YAML subscription as proxies instead of
+            // referencing it as a proxy-provider.
+            const inlineProviderContent = parseBooleanFlag(c.req.query('inline'));
+
             const builder = new ClashConfigBuilder(
                 config,
                 selectedRules,
@@ -160,7 +164,8 @@ export function createApp(bindings = {}) {
                 enableClashUI,
                 externalController,
                 externalUiDownloadUrl,
-                includeAutoSelect
+                includeAutoSelect,
+                inlineProviderContent
             );
             await builder.build();
             const userinfo = builder.getSubscriptionUserinfo();
@@ -199,6 +204,10 @@ export function createApp(bindings = {}) {
                 baseConfig = await storage.getConfigById(configId);
             }
 
+            // inline=true: inline a Clash YAML subscription as proxies instead of
+            // referencing it as a proxy-provider.
+            const inlineProviderContent = parseBooleanFlag(c.req.query('inline'));
+
             const builder = new MihomoConfigBuilder(
                 config,
                 selectedRules,
@@ -210,7 +219,8 @@ export function createApp(bindings = {}) {
                 enableClashUI,
                 externalController,
                 externalUiDownloadUrl,
-                includeAutoSelect
+                includeAutoSelect,
+                inlineProviderContent
             );
             await builder.build();
             const userinfo = builder.getSubscriptionUserinfo();
