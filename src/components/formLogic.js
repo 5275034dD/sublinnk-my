@@ -78,7 +78,7 @@ export const formLogicFn = (t) => {
                 customRules: false, // 自定义规则
                 general: false,     // 通用设置
                 baseConfig: false,  // 基础配置
-                ua: false          // User Agent
+                ua: false           // User Agent
             },
             selectedRules: [],
             selectedPredefinedRule: 'balanced',
@@ -306,7 +306,7 @@ export const formLogicFn = (t) => {
                 }
 
                 try {
-                    if (this.configType === 'clash') {
+                    if (this.configType === 'clash' || this.configType === 'mihomo') {
                         if (!window.jsyaml || !window.jsyaml.load) {
                             throw new Error(window.APP_TRANSLATIONS.parserUnavailable || 'Parser unavailable. Please refresh and try again.');
                         }
@@ -393,10 +393,12 @@ export const formLogicFn = (t) => {
 
                     const queryString = params.toString();
 
+                    // 新增 mihomo 接口链接拼接
                     this.generatedLinks = {
                         xray: origin + '/xray?' + queryString,
                         singbox: origin + '/singbox?' + queryString,
                         clash: origin + '/clash?' + queryString,
+                        mihomo: origin + '/mihomo?' + queryString,
                         surge: origin + '/surge?' + queryString
                     };
 
@@ -460,11 +462,12 @@ export const formLogicFn = (t) => {
                             }
                             isFirstRequest = false;
 
-                            // Map types to their corresponding path prefixes
+                            // Map types to their corresponding path prefixes (新增 mihomo -> m)
                             const prefixMap = {
                                 xray: 'x',
                                 singbox: 'b',
                                 clash: 'c',
+                                mihomo: 'm',
                                 surge: 's'
                             };
 
@@ -511,14 +514,14 @@ export const formLogicFn = (t) => {
 
                 try {
                     const url = new URL(text);
-                    // Check if it matches our short link pattern: /[bcxs]/[code]
-                    const pathMatch = url.pathname.match(/^\/([bcxs])\/([a-zA-Z0-9_-]+)$/);
+                    // Check if it matches our short link pattern: /[bcxsm]/[code]
+                    const pathMatch = url.pathname.match(/^\/([bcxsm])\/([a-zA-Z0-9_-]+)$/);
                     if (pathMatch) {
                         return true;
                     }
 
                     // Check if it's a full subscription URL with query params
-                    const fullMatch = url.pathname.match(/^\/(singbox|clash|xray|surge)$/);
+                    const fullMatch = url.pathname.match(/^\/(singbox|clash|mihomo|xray|surge)$/);
                     if (fullMatch && url.search) {
                         return true;
                     }
@@ -546,7 +549,7 @@ export const formLogicFn = (t) => {
                     }
 
                     // Check if it's a short link
-                    const shortMatch = urlToParse.pathname.match(/^\/([bcxs])\/([a-zA-Z0-9_-]+)$/);
+                    const shortMatch = urlToParse.pathname.match(/^\/([bcxsm])\/([a-zA-Z0-9_-]+)$/);
 
                     if (shortMatch) {
                         // It's a short link, resolve it first
