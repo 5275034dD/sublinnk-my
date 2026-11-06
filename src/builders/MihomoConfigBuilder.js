@@ -20,7 +20,8 @@ export class MihomoConfigBuilder extends ClashConfigBuilder {
         enableClashUI = false,
         externalController,
         externalUiDownloadUrl,
-        includeAutoSelect = true
+        includeAutoSelect = true,
+        inlineProviderContent = false
     ) {
         super(
             inputString,
@@ -33,7 +34,8 @@ export class MihomoConfigBuilder extends ClashConfigBuilder {
             enableClashUI,
             externalController,
             externalUiDownloadUrl,
-            includeAutoSelect
+            includeAutoSelect,
+            inlineProviderContent
         );
     }
 
