@@ -111,10 +111,22 @@ export class MihomoConfigBuilder extends ClashConfigBuilder {
         const ruleResults = emitClashRules(rules, this.t);
 
         // 6. 追加 Mihomo 特有的 GEOSITE 规则 (AI 与 GitHub 独立分流)
+        // NOTE: the stock geosite.dat has no "claude" or "category-ai-chat-us"
+        // list, so those GEOSITE rules fail validation ("list not found").
+        // Use domain rules for those services instead.
         const mihomoSpecificRules = [
             'GEOSITE,openai,🤖 AI 服务',
-            'GEOSITE,claude,🤖 AI 服务',
-            'GEOSITE,category-ai-chat-us,🤖 AI 服务',
+            'DOMAIN-SUFFIX,claude.ai,🤖 AI 服务',
+            'DOMAIN-SUFFIX,anthropic.com,🤖 AI 服务',
+            'DOMAIN-SUFFIX,deepseek.com,🤖 AI 服务',
+            'DOMAIN-SUFFIX,perplexity.ai,🤖 AI 服务',
+            'DOMAIN-SUFFIX,grok.com,🤖 AI 服务',
+            'DOMAIN-SUFFIX,x.ai,🤖 AI 服务',
+            'DOMAIN-SUFFIX,poe.com,🤖 AI 服务',
+            'DOMAIN-SUFFIX,copilot.microsoft.com,🤖 AI 服务',
+            'DOMAIN-SUFFIX,gemini.google.com,🤖 AI 服务',
+            'DOMAIN-SUFFIX,ai.google.dev,🤖 AI 服务',
+            'DOMAIN-SUFFIX,aistudio.google.com,🤖 AI 服务',
             'GEOSITE,github,🐱 GitHub'
         ];
 
