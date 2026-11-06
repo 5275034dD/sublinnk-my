@@ -23,7 +23,44 @@ export function encodeBase64(input) {
 	}
 	return base64FromBinary(binaryString);
 }
+// 解析 Hysteria 2 链接
+export function parseHysteria2Url(urlStr) {
+	try {
+		const { addressPart, params, name } = parseUrlParams(urlStr);
+		const { host, port } = parseServerInfo(addressPart);
+		
+		// addressPart 在 hy2 中通常是 password@host:port 或者仅仅是 host:port，password 在 @ 前面
+		let password = '';
+		let actualHost = host;
+		if (addressPart.includes('@')) {
+			const atIndex = addressPart.lastIndexOf('@');
+			password = addressPart.slice(0, atIndex);
+			const serverPart = addressPart.slice(atIndex + 1);
+			const parsedServer = parseServerInfo(serverPart);
+			actualHost = parsedServer.host;
+		}
 
+		return {
+			tag: name || `${actualHost}:${port}`,
+			type: 'hysteria2',
+			server: actualHost,
+			server_port: port,
+			password: password || params.password || params.auth || '',
+			up: params.up,
+			down: params.down,
+			obfs: params.obfs ? { type: params.obfs, password: params.obfs-password || params.obfs_password } : undefined,
+			tls: {
+				enabled: true,
+				server_name: params.sni || actualHost,
+				insecure: parseBool(params.insecure || params.allowInsecure, false),
+			},
+			alpn: params.alpn ? params.alpn.split(',') : undefined,
+		};
+	} catch (e) {
+		console.error('Failed to parse hysteria2 url:', e);
+		return null;
+	}
+}
 // Base64 解码函数
 export function decodeBase64(input) {
 	const binaryString = base64ToBinary(input);
