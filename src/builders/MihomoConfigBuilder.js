@@ -72,11 +72,12 @@ export class MihomoConfigBuilder extends ClashConfigBuilder {
         const selectMembers = this.buildSelectGroupMembers(proxyList);
         const providerNames = this.getAllProviderNames();
 
-        // 3. 动态补全 🤖 AI 服务 策略组
-        if (!this.hasProxyGroup('🤖 AI 服务')) {
+        // 3. 动态补全 AI 服务策略组（与规则生成器用同一个组名，避免出现两个 AI 分组）
+        const aiGroupName = this.t('outboundNames.AI Services');
+        if (!this.hasProxyGroup(aiGroupName)) {
             const aiGroup = {
                 type: 'select',
-                name: '🤖 AI 服务',
+                name: aiGroupName,
                 proxies: [...selectMembers]
             };
             if (providerNames.length > 0) aiGroup.use = providerNames;
@@ -84,11 +85,12 @@ export class MihomoConfigBuilder extends ClashConfigBuilder {
             this.config['proxy-groups'].splice(1, 0, aiGroup);
         }
 
-        // 4. 动态补全 🐱 GitHub 策略组
-        if (!this.hasProxyGroup('🐱 GitHub')) {
+        // 4. 动态补全 GitHub 策略组（与规则生成器用同一个组名，避免出现两个 GitHub 分组）
+        const githubGroupName = this.t('outboundNames.Github');
+        if (!this.hasProxyGroup(githubGroupName)) {
             const githubGroup = {
                 type: 'select',
-                name: '🐱 GitHub',
+                name: githubGroupName,
                 proxies: [...selectMembers]
             };
             if (providerNames.length > 0) githubGroup.use = providerNames;
@@ -115,19 +117,19 @@ export class MihomoConfigBuilder extends ClashConfigBuilder {
         // list, so those GEOSITE rules fail validation ("list not found").
         // Use domain rules for those services instead.
         const mihomoSpecificRules = [
-            'GEOSITE,openai,🤖 AI 服务',
-            'DOMAIN-SUFFIX,claude.ai,🤖 AI 服务',
-            'DOMAIN-SUFFIX,anthropic.com,🤖 AI 服务',
-            'DOMAIN-SUFFIX,deepseek.com,🤖 AI 服务',
-            'DOMAIN-SUFFIX,perplexity.ai,🤖 AI 服务',
-            'DOMAIN-SUFFIX,grok.com,🤖 AI 服务',
-            'DOMAIN-SUFFIX,x.ai,🤖 AI 服务',
-            'DOMAIN-SUFFIX,poe.com,🤖 AI 服务',
-            'DOMAIN-SUFFIX,copilot.microsoft.com,🤖 AI 服务',
-            'DOMAIN-SUFFIX,gemini.google.com,🤖 AI 服务',
-            'DOMAIN-SUFFIX,ai.google.dev,🤖 AI 服务',
-            'DOMAIN-SUFFIX,aistudio.google.com,🤖 AI 服务',
-            'GEOSITE,github,🐱 GitHub'
+            `GEOSITE,openai,${aiGroupName}`,
+            `DOMAIN-SUFFIX,claude.ai,${aiGroupName}`,
+            `DOMAIN-SUFFIX,anthropic.com,${aiGroupName}`,
+            `DOMAIN-SUFFIX,deepseek.com,${aiGroupName}`,
+            `DOMAIN-SUFFIX,perplexity.ai,${aiGroupName}`,
+            `DOMAIN-SUFFIX,grok.com,${aiGroupName}`,
+            `DOMAIN-SUFFIX,x.ai,${aiGroupName}`,
+            `DOMAIN-SUFFIX,poe.com,${aiGroupName}`,
+            `DOMAIN-SUFFIX,copilot.microsoft.com,${aiGroupName}`,
+            `DOMAIN-SUFFIX,gemini.google.com,${aiGroupName}`,
+            `DOMAIN-SUFFIX,ai.google.dev,${aiGroupName}`,
+            `DOMAIN-SUFFIX,aistudio.google.com,${aiGroupName}`,
+            `GEOSITE,github,${githubGroupName}`
         ];
 
         // 7. 合并规则列表
