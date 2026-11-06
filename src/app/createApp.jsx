@@ -567,4 +567,52 @@ function getRequestHeader(request, name) {
 
     try {
         const value = request.header(name);
-        if (value
+        if (value !== undefined) {
+            return value;
+        }
+    } catch {
+        // Fallback if HonoRequest.header cannot read from the raw request.
+    }
+
+    const headers = request.raw?.headers;
+    if (!headers) {
+        return undefined;
+    }
+
+    if (typeof headers.get === 'function') {
+        return headers.get(name) ?? headers.get(name.toLowerCase()) ?? undefined;
+    }
+
+    if (typeof headers === 'object') {
+        const lowerName = name.toLowerCase();
+        const headerValue = headers[lowerName] ?? headers[name];
+        if (Array.isArray(headerValue)) {
+            return headerValue[0];
+        }
+        return headerValue;
+    }
+
+    return undefined;
+}
+
+function requireShortLinkService(service) {
+    if (!service) {
+        throw new MissingDependencyError('Short link functionality is unavailable');
+    }
+    return service;
+}
+
+function requireConfigStorage(service) {
+    if (!service) {
+        throw new MissingDependencyError('Config storage functionality is unavailable');
+    }
+    return service;
+}
+
+function handleError(c, error, logger) {
+    if (error instanceof ServiceError) {
+        return c.text(error.message, error.status);
+    }
+    logger.error?.('Unhandled error', error);
+    return c.text(`Error: ${error.message}`, 500);
+}
