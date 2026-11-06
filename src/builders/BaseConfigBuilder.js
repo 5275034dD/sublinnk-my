@@ -3,7 +3,7 @@ import { createStableProviderName, deepCopy, tryDecodeSubscriptionLines, decodeB
 import { createTranslator } from '../i18n/index.js';
 import { generateRules, getOutbounds, PREDEFINED_RULE_SETS } from '../config/index.js';
 
-// 内部高兼容性 HY2 解析器，直接绕过外部 parser 的潜在冲突
+// 内部高兼容性 HY2 解析器
 function parseHysteria2Direct(urlStr) {
     try {
         const { addressPart, params, name } = parseUrlParams(urlStr);
@@ -38,6 +38,38 @@ function parseHysteria2Direct(urlStr) {
     } catch (e) {
         return null;
     }
+}
+
+// 辅助：将 Clash 格式的代理对象转换为内部标准对象
+function convertClashProxyToInternal(proxy) {
+    if (!proxy || typeof proxy !== 'object') return null;
+    const type = proxy.type;
+    
+    if (type === 'hysteria2' || type === 'hy2') {
+        return {
+            tag: proxy.name || `${proxy.server}:${proxy.port}`,
+            type: 'hysteria2',
+            server: proxy.server,
+            server_port: proxy.port,
+            password: proxy.password || proxy.auth || '',
+            up: proxy.up,
+            down: proxy.down,
+            obfs: proxy.obfs ? { type: proxy.obfs, password: proxy['obfs-password'] } : undefined,
+            tls: {
+                enabled: true,
+                server_name: proxy.sni || proxy.server,
+                insecure: !!proxy['skip-cert-verify'],
+            },
+            alpn: proxy.alpn,
+        };
+    }
+    return {
+        tag: proxy.name || proxy.tag,
+        type: proxy.type,
+        server: proxy.server,
+        server_port: proxy.port || proxy.server_port,
+        ...proxy
+    };
 }
 
 export class BaseConfigBuilder {
@@ -97,23 +129,53 @@ export class BaseConfigBuilder {
                                 await this.collectProviderNodeNames(content);
                                 continue;
                             }
+
+                            // 🟢 核心增强：对远程抓取的内容进行 Base64 深度解码与明文多行提取
+                            let rawContent = content;
+                            try {
+                                const decodedBase64 = decodeBase64(content.replace(/\s+/g, ''));
+                                if (decodedBase64 && (decodedBase64.includes('://') || decodedBase64.includes('proxies:'))) {
+                                    rawContent = decodedBase64;
+                                }
+                            } catch (_) {}
+
+                            // 按行解析可能包含的明文协议链接
+                            const lines = rawContent.split('\n').map(l => l.trim()).filter(Boolean);
+                            for (const line of lines) {
+                                if (line.startsWith('hy2://') || line.startsWith('hysteria2://')) {
+                                    const hy2Item = parseHysteria2Direct(line);
+                                    if (hy2Item) parsedItems.push(hy2Item);
+                                } else if (line.includes('://')) {
+                                    const parsedItem = await ProxyParser.parse(line, this.userAgent);
+                                    if (parsedItem) parsedItems.push(parsedItem);
+                                }
+                            }
+
+                            // 同时使用内容解析器处理 YAML/JSON 格式的订阅
                             const { parseSubscriptionContent } = await import('../parsers/subscription/subscriptionContentParser.js');
-                            const subContentResult = parseSubscriptionContent(content);
-                            if (Array.isArray(subContentResult)) {
-                                for (const item of subContentResult) {
-                                    if (typeof item === 'string') {
-                                        const parsedItem = (item.startsWith('hy2://') || item.startsWith('hysteria2://')) 
-                                            ? parseHysteria2Direct(item) 
-                                            : await ProxyParser.parse(item, this.userAgent);
-                                        if (parsedItem) parsedItems.push(parsedItem);
-                                    } else if (item && item.tag) {
-                                        parsedItems.push(item);
-                                    }
+                            const subContentResult = parseSubscriptionContent(rawContent);
+                            if (subContentResult) {
+                                if (Array.isArray(subContentResult.proxies)) {
+                                    subContentResult.proxies.forEach(p => {
+                                        const converted = convertClashProxyToInternal(p);
+                                        if (converted) parsedItems.push(converted);
+                                    });
+                                } else if (Array.isArray(subContentResult)) {
+                                    subContentResult.forEach(item => {
+                                        if (typeof item === 'string') {
+                                            if (item.startsWith('hy2://') || item.startsWith('hysteria2://')) {
+                                                const h = parseHysteria2Direct(item);
+                                                if (h) parsedItems.push(h);
+                                            }
+                                        } else if (item && item.tag) {
+                                            parsedItems.push(item);
+                                        }
+                                    });
                                 }
                             }
                         }
                     } catch (e) {
-                        console.error('Error fetching sub:', e);
+                        console.error('Error fetching remote subscription:', e);
                     }
                     continue;
                 } else {
