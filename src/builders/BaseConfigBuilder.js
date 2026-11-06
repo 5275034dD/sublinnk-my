@@ -1,7 +1,44 @@
 import { ProxyParser } from '../parsers/index.js';
-import { createStableProviderName, deepCopy, tryDecodeSubscriptionLines, decodeBase64, parseHysteria2Url } from '../utils.js';
+import { createStableProviderName, deepCopy, tryDecodeSubscriptionLines, decodeBase64, parseServerInfo, parseUrlParams, parseBool } from '../utils.js';
 import { createTranslator } from '../i18n/index.js';
 import { generateRules, getOutbounds, PREDEFINED_RULE_SETS } from '../config/index.js';
+
+// 内部高兼容性 HY2 解析器，直接绕过外部 parser 的潜在冲突
+function parseHysteria2Direct(urlStr) {
+    try {
+        const { addressPart, params, name } = parseUrlParams(urlStr);
+        let password = '';
+        let actualHost = addressPart;
+        
+        if (addressPart.includes('@')) {
+            const atIndex = addressPart.lastIndexOf('@');
+            password = addressPart.slice(0, atIndex);
+            actualHost = addressPart.slice(atIndex + 1);
+        }
+        
+        const { host, port } = parseServerInfo(actualHost);
+        if (!host || !port) return null;
+
+        return {
+            tag: name || `${host}:${port}`,
+            type: 'hysteria2',
+            server: host,
+            server_port: port,
+            password: password || params.password || params.auth || '',
+            up: params.up,
+            down: params.down,
+            obfs: params.obfs ? { type: params.obfs, password: params['obfs-password'] || params.obfs_password } : undefined,
+            tls: {
+                enabled: true,
+                server_name: params.sni || host,
+                insecure: parseBool(params.insecure || params.allowInsecure || params.allow_insecure, false),
+            },
+            alpn: params.alpn ? params.alpn.split(',') : undefined,
+        };
+    } catch (e) {
+        return null;
+    }
+}
 
 export class BaseConfigBuilder {
     constructor(inputString, baseConfig, lang, userAgent, groupByCountry = false, includeAutoSelect = true) {
@@ -14,8 +51,8 @@ export class BaseConfigBuilder {
         this.appliedOverrideKeys = new Set();
         this.groupByCountry = groupByCountry;
         this.includeAutoSelect = includeAutoSelect;
-        this.providerUrls = [];  // URLs to use as providers (auto-sync)
-        this.providerNodeNames = [];  // node names from provider subscriptions, for country enumeration only
+        this.providerUrls = [];
+        this.providerNodeNames = [];
         this.autoProviderDescriptors = undefined;
         this.subscriptionUserinfo = undefined;
     }
@@ -31,52 +68,6 @@ export class BaseConfigBuilder {
         const input = this.inputString || '';
         const parsedItems = [];
 
-        // Import the content parser for direct input parsing
-        const { parseSubscriptionContent } = await import('../parsers/subscription/subscriptionContentParser.js');
-
-        // Try to parse the entire input as a config format (Sing-Box JSON or Clash YAML)
-        const directResult = parseSubscriptionContent(input);
-        if (directResult && typeof directResult === 'object' && directResult.type) {
-            // It's a parsed config (singboxConfig or yamlConfig)
-            if (directResult.config) {
-                this.applyConfigOverrides(directResult.config);
-            }
-            if (Array.isArray(directResult.proxies)) {
-                for (const proxy of directResult.proxies) {
-                    if (proxy && proxy.tag) {
-                        parsedItems.push(proxy);
-                    }
-                }
-                if (parsedItems.length > 0) return parsedItems;
-            }
-        }
-
-        // If direct parsing didn't work, check for Base64 encoded content
-        const isBase64Like = /^[A-Za-z0-9+/=\r\n]+$/.test(input) && input.replace(/[\r\n]/g, '').length % 4 === 0;
-        if (isBase64Like) {
-            try {
-                const sanitized = input.replace(/\s+/g, '');
-                const decodedWhole = decodeBase64(sanitized);
-                if (typeof decodedWhole === 'string') {
-                    const decodedResult = parseSubscriptionContent(decodedWhole);
-                    if (decodedResult && typeof decodedResult === 'object' && decodedResult.type) {
-                        if (decodedResult.config) {
-                            this.applyConfigOverrides(decodedResult.config);
-                        }
-                        if (Array.isArray(decodedResult.proxies)) {
-                            for (const proxy of decodedResult.proxies) {
-                                if (proxy && proxy.tag) {
-                                    parsedItems.push(proxy);
-                                }
-                            }
-                            if (parsedItems.length > 0) return parsedItems;
-                        }
-                    }
-                }
-            } catch (_) { }
-        }
-
-        // Otherwise, line-by-line processing (URLs, subscription content, remote lists, etc.)
         const urls = input.split('\n').filter(url => url.trim() !== '');
         for (const url of urls) {
             let processedUrls = tryDecodeSubscriptionLines(url);
@@ -86,119 +77,62 @@ export class BaseConfigBuilder {
 
             for (const processedUrl of processedUrls) {
                 const trimmedUrl = typeof processedUrl === 'string' ? processedUrl.trim() : '';
+                if (!trimmedUrl) continue;
 
-                // Check if it's an HTTP(S) URL - may use as provider if format matches
-                if (trimmedUrl.startsWith('http://') || trimmedUrl.startsWith('https://')) {
-                    const { fetchSubscriptionWithFormat } = await import('../parsers/subscription/httpSubscriptionFetcher.js');
-
+                let result = null;
+                if (trimmedUrl.startsWith('hy2://') || trimmedUrl.startsWith('hysteria2://')) {
+                    result = parseHysteria2Direct(trimmedUrl);
+                } else if (trimmedUrl.startsWith('http://') || trimmedUrl.startsWith('https://')) {
+                    // 处理远程订阅链接
                     try {
+                        const { fetchSubscriptionWithFormat } = await import('../parsers/subscription/httpSubscriptionFetcher.js');
                         const fetchResult = await fetchSubscriptionWithFormat(trimmedUrl, this.userAgent);
                         if (fetchResult) {
                             const { content, format, url: originalUrl, subscriptionUserinfo } = fetchResult;
-
                             if (subscriptionUserinfo && !this.subscriptionUserinfo) {
                                 this.subscriptionUserinfo = subscriptionUserinfo;
                             }
-
-                            // If format is compatible with target client, use as provider
                             if (this.isCompatibleProviderFormat(format)) {
                                 this.providerUrls.push(originalUrl);
-                                // Content is already fetched; keep node names so country
-                                // groups can be built over provider members later.
                                 await this.collectProviderNodeNames(content);
-                                continue;  // Skip parsing, will be used as provider
-                            }
-
-                            // Otherwise parse the content as usual
-                            const result = parseSubscriptionContent(content);
-                            if (result && typeof result === 'object' && (result.type === 'yamlConfig' || result.type === 'singboxConfig' || result.type === 'surgeConfig')) {
-                                if (result.config) {
-                                    this.applyConfigOverrides(result.config);
-                                }
-                                if (Array.isArray(result.proxies)) {
-                                    result.proxies.forEach(proxy => {
-                                        if (proxy && typeof proxy === 'object' && proxy.tag) {
-                                            parsedItems.push(proxy);
-                                        }
-                                    });
-                                }
                                 continue;
                             }
-                            // Handle array of URIs or other formats
-                            if (Array.isArray(result)) {
-                                for (const item of result) {
-                                    if (item && typeof item === 'object' && item.tag) {
+                            const { parseSubscriptionContent } = await import('../parsers/subscription/subscriptionContentParser.js');
+                            const subContentResult = parseSubscriptionContent(content);
+                            if (Array.isArray(subContentResult)) {
+                                for (const item of subContentResult) {
+                                    if (typeof item === 'string') {
+                                        const parsedItem = (item.startsWith('hy2://') || item.startsWith('hysteria2://')) 
+                                            ? parseHysteria2Direct(item) 
+                                            : await ProxyParser.parse(item, this.userAgent);
+                                        if (parsedItem) parsedItems.push(parsedItem);
+                                    } else if (item && item.tag) {
                                         parsedItems.push(item);
-                                    } else if (typeof item === 'string') {
-                                        let subResult;
-                                        if (item.startsWith('hy2://') || item.startsWith('hysteria2://')) {
-                                            subResult = parseHysteria2Url(item);
-                                        } else {
-                                            subResult = await ProxyParser.parse(item, this.userAgent);
-                                        }
-                                        if (subResult) {
-                                            parsedItems.push(subResult);
-                                        }
                                     }
                                 }
                             }
                         }
-                    } catch (error) {
-                        console.error('Error processing HTTP subscription:', error);
+                    } catch (e) {
+                        console.error('Error fetching sub:', e);
                     }
                     continue;
-                }
-
-                // Non-HTTP URLs (protocol URIs like ss://, vmess://, hy2:// etc.)
-                let result;
-                if (trimmedUrl.startsWith('hy2://') || trimmedUrl.startsWith('hysteria2://')) {
-                    result = parseHysteria2Url(trimmedUrl);
                 } else {
                     result = await ProxyParser.parse(trimmedUrl, this.userAgent);
                 }
 
-                // Handle yamlConfig, singboxConfig, and surgeConfig types (they have the same structure)
-                if (result && typeof result === 'object' && (result.type === 'yamlConfig' || result.type === 'singboxConfig' || result.type === 'surgeConfig')) {
-                    if (result.config) {
-                        this.applyConfigOverrides(result.config);
+                if (result) {
+                    if (Array.isArray(result)) {
+                        parsedItems.push(...result);
+                    } else {
+                        parsedItems.push(result);
                     }
-                    if (Array.isArray(result.proxies)) {
-                        result.proxies.forEach(proxy => {
-                            if (proxy && typeof proxy === 'object' && proxy.tag) {
-                                parsedItems.push(proxy);
-                            }
-                        });
-                    }
-                    continue;
-                }
-                if (Array.isArray(result)) {
-                    for (const item of result) {
-                        if (item && typeof item === 'object' && item.tag) {
-                            parsedItems.push(item);
-                        } else if (typeof item === 'string') {
-                            let subResult;
-                            if (item.startsWith('hy2://') || item.startsWith('hysteria2://')) {
-                                subResult = parseHysteria2Url(item);
-                            } else {
-                                subResult = await ProxyParser.parse(item, this.userAgent);
-                            }
-                            if (subResult) {
-                                parsedItems.push(subResult);
-                            }
-                        }
-                    }
-                } else if (result) {
-                    parsedItems.push(result);
                 }
             }
         }
-
         return parsedItems;
     }
 
-    isCompatibleProviderFormat(format) {
-        return false;  // Default: no provider support
-    }
+    isCompatibleProviderFormat(format) { return false; }
 
     async collectProviderNodeNames(content) {
         try {
@@ -215,159 +149,65 @@ export class BaseConfigBuilder {
     }
 
     getAutoProviderDescriptors(reservedNames = []) {
-        if (this.autoProviderDescriptors) {
-            return this.autoProviderDescriptors;
-        }
-
+        if (this.autoProviderDescriptors) return this.autoProviderDescriptors;
         const usedNames = new Set(reservedNames);
         const providerNamesByUrl = new Map();
         const descriptors = [];
 
         for (const url of this.providerUrls) {
-            if (typeof url !== 'string' || url.trim() === '') {
-                throw new Error('Provider URL must be a non-empty string');
-            }
-
             const normalizedUrl = url.trim();
-            if (providerNamesByUrl.has(normalizedUrl)) {
-                continue;
-            }
-
+            if (providerNamesByUrl.has(normalizedUrl)) continue;
             const baseName = createStableProviderName(normalizedUrl);
             let name = baseName;
             let suffix = 2;
-
             while (usedNames.has(name)) {
                 name = `${baseName}_${suffix}`;
                 suffix += 1;
             }
-
             usedNames.add(name);
             providerNamesByUrl.set(normalizedUrl, name);
             descriptors.push({ name, url: normalizedUrl });
         }
-
         this.autoProviderDescriptors = descriptors;
         return descriptors;
     }
 
     applyConfigOverrides(overrides) {
-        if (!overrides || typeof overrides !== 'object') {
-            return;
-        }
-
+        if (!overrides || typeof overrides !== 'object') return;
         const blacklistedKeys = new Set(['proxies', 'rules', 'rule-providers', 'proxy-groups']);
-
         Object.entries(overrides).forEach(([key, value]) => {
-            if (blacklistedKeys.has(key)) {
-                return;
-            }
+            if (blacklistedKeys.has(key)) return;
             if (value === undefined) {
                 delete this.config[key];
-                this.appliedOverrideKeys.add(key);
-            } else if (key === 'dns' && typeof value === 'object' && !Array.isArray(value)) {
-                this.config[key] = this.mergeDnsConfig(this.config[key], value);
                 this.appliedOverrideKeys.add(key);
             } else {
                 this.config[key] = deepCopy(value);
                 this.appliedOverrideKeys.add(key);
             }
         });
-
-        if (Array.isArray(overrides['proxy-groups'])) {
-            this.pendingUserProxyGroups = this.pendingUserProxyGroups || [];
-            this.pendingUserProxyGroups.push(...overrides['proxy-groups']);
-        }
     }
 
-    mergeDnsConfig(existing, incoming) {
-        if (!existing || typeof existing !== 'object') {
-            return deepCopy(incoming);
-        }
-
-        const result = deepCopy(existing);
-        const mergeableArrayKeys = new Set(['nameserver', 'fallback', 'fake-ip-filter']);
-
-        Object.entries(incoming).forEach(([key, value]) => {
-            if (mergeableArrayKeys.has(key) && Array.isArray(value)) {
-                if (Array.isArray(result[key])) {
-                    result[key] = [...new Set([...result[key], ...value])];
-                } else {
-                    result[key] = deepCopy(value);
-                }
-            } else if (key === 'nameserver-policy' && typeof value === 'object' && !Array.isArray(value)) {
-                result[key] = { ...(result[key] || {}), ...deepCopy(value) };
-            } else {
-                result[key] = deepCopy(value);
-            }
-        });
-
-        return result;
-    }
-
-    hasConfigOverride(key) {
-        return this.appliedOverrideKeys?.has(key);
-    }
-
-    getSubscriptionUserinfo() {
-        return this.subscriptionUserinfo;
-    }
+    hasConfigOverride(key) { return this.appliedOverrideKeys?.has(key); }
+    getSubscriptionUserinfo() { return this.subscriptionUserinfo; }
 
     getOutboundsList() {
-        let outbounds;
         if (typeof this.selectedRules === 'string' && PREDEFINED_RULE_SETS[this.selectedRules]) {
-            outbounds = getOutbounds(PREDEFINED_RULE_SETS[this.selectedRules]);
-        } else if (this.selectedRules && Object.keys(this.selectedRules).length > 0) {
-            outbounds = getOutbounds(this.selectedRules);
-        } else {
-            outbounds = getOutbounds(PREDEFINED_RULE_SETS.minimal);
+            return getOutbounds(PREDEFINED_RULE_SETS[this.selectedRules]);
         }
-        return outbounds;
+        return getOutbounds(this.selectedRules && Object.keys(this.selectedRules).length > 0 ? this.selectedRules : PREDEFINED_RULE_SETS.minimal);
     }
 
-    getProxyList() {
-        return this.getProxies().map(proxy => this.getProxyName(proxy));
-    }
-
-    getProxies() {
-        throw new Error('getProxies must be implemented in child class');
-    }
-
-    getProxyName(proxy) {
-        throw new Error('getProxyName must be implemented in child class');
-    }
-
-    convertProxy(proxy) {
-        throw new Error('convertProxy must be implemented in child class');
-    }
-
-    addProxyToConfig(proxy) {
-        throw new Error('addProxyToConfig must be implemented in child class');
-    }
-
-    addAutoSelectGroup(proxyList) {
-        throw new Error('addAutoSelectGroup must be implemented in child class');
-    }
-
-    addNodeSelectGroup(proxyList) {
-        throw new Error('addNodeSelectGroup must be implemented in child class');
-    }
-
-    addOutboundGroups(outbounds, proxyList) {
-        throw new Error('addOutboundGroups must be implemented in child class');
-    }
-
-    addCustomRuleGroups(proxyList) {
-        throw new Error('addCustomRuleGroups must be implemented in child class');
-    }
-
-    addFallBackGroup(proxyList) {
-        throw new Error('addFallBackGroup must be implemented in child class');
-    }
-
-    addCountryGroups() {
-        throw new Error('addCountryGroups must be implemented in child class');
-    }
+    getProxyList() { return this.getProxies().map(proxy => this.getProxyName(proxy)); }
+    getProxies() { throw new Error('getProxies must be implemented'); }
+    getProxyName(proxy) { throw new Error('getProxyName must be implemented'); }
+    convertProxy(proxy) { throw new Error('convertProxy must be implemented'); }
+    addProxyToConfig(proxy) { throw new Error('addProxyToConfig must be implemented'); }
+    addAutoSelectGroup(proxyList) { throw new Error('addAutoSelectGroup must be implemented'); }
+    addNodeSelectGroup(proxyList) { throw new Error('addNodeSelectGroup must be implemented'); }
+    addOutboundGroups(outbounds, proxyList) { throw new Error('addOutboundGroups must be implemented'); }
+    addCustomRuleGroups(proxyList) { throw new Error('addCustomRuleGroups must be implemented'); }
+    addFallBackGroup(proxyList) { throw new Error('addFallBackGroup must be implemented'); }
+    addCountryGroups() { throw new Error('addCountryGroups must be implemented'); }
 
     addCustomItems(customItems) {
         const validItems = customItems.filter(item => item != null);
@@ -384,28 +224,15 @@ export class BaseConfigBuilder {
     addSelectors() {
         const outbounds = this.getOutboundsList();
         const proxyList = this.getProxyList();
-
         this.addAutoSelectGroup(proxyList);
         this.addNodeSelectGroup(proxyList);
-        if (this.groupByCountry) {
-            this.addCountryGroups();
-        }
+        if (this.groupByCountry) this.addCountryGroups();
         this.addOutboundGroups(outbounds, proxyList);
         this.addCustomRuleGroups(proxyList);
         this.addFallBackGroup(proxyList);
-
-        if (this.pendingUserProxyGroups && this.pendingUserProxyGroups.length > 0) {
-            this.mergeUserProxyGroups(this.pendingUserProxyGroups);
-        }
     }
 
     mergeUserProxyGroups(userGroups) {}
-
-    generateRules() {
-        return generateRules(this.selectedRules, this.customRules);
-    }
-
-    formatConfig() {
-        throw new Error('formatConfig must be implemented in child class');
-    }
-} 
+    generateRules() { return generateRules(this.selectedRules, this.customRules); }
+    formatConfig() { throw new Error('formatConfig must be implemented'); }
+}
