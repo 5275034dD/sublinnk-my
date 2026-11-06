@@ -174,7 +174,7 @@ export function createApp(bindings = {}) {
         }
     });
 
-    // 新增：Mihomo (Clash Meta) 专属订阅生成接口
+    // Mihomo 专属接口
     app.get('/mihomo', async (c) => {
         try {
             const config = c.req.query('config');
@@ -465,16 +465,13 @@ export function createApp(bindings = {}) {
 
 export function parseSelectedRules(raw) {
     if (!raw) return [];
-
     if (typeof raw === 'string' && PREDEFINED_RULE_SETS[raw]) {
         return PREDEFINED_RULE_SETS[raw];
     }
-
     try {
         const parsed = JSON.parse(raw);
         return Array.isArray(parsed) ? parsed : [];
     } catch {
-        console.warn(`Failed to parse selectedRules: ${raw}, falling back to minimal`);
         return PREDEFINED_RULE_SETS.minimal;
     }
 }
@@ -494,17 +491,11 @@ function parseBooleanFlag(value) {
 }
 
 function parseSemverLike(value) {
-    if (typeof value !== 'string') {
-        return null;
-    }
+    if (typeof value !== 'string') return null;
     const trimmed = value.trim();
-    if (!trimmed) {
-        return null;
-    }
+    if (!trimmed) return null;
     const match = trimmed.match(/(\d+)\.(\d+)(?:\.(\d+))?/);
-    if (!match) {
-        return null;
-    }
+    if (!match) return null;
     return {
         major: Number(match[1]),
         minor: Number(match[2]),
@@ -513,22 +504,14 @@ function parseSemverLike(value) {
 }
 
 function isSingboxLegacyConfig(version) {
-    if (!version || Number.isNaN(version.major) || Number.isNaN(version.minor)) {
-        return false;
-    }
-    if (version.major !== 1) {
-        return version.major < 1;
-    }
+    if (!version || Number.isNaN(version.major) || Number.isNaN(version.minor)) return false;
+    if (version.major !== 1) return version.major < 1;
     return version.minor < 12;
 }
 
 function isSingboxModernConfig(version) {
-    if (!version || Number.isNaN(version.major) || Number.isNaN(version.minor)) {
-        return false;
-    }
-    if (version.major !== 1) {
-        return version.major > 1;
-    }
+    if (!version || Number.isNaN(version.major) || Number.isNaN(version.minor)) return false;
+    if (version.major !== 1) return version.major > 1;
     return version.minor >= 14;
 }
 
@@ -543,69 +526,44 @@ function resolveSingboxConfigVersion(requestedVersion, userAgent) {
         if (normalizedRequested === 'legacy') return '1.11';
         if (normalizedRequested === 'latest') return '1.14';
         const parsed = parseSemverLike(normalizedRequested);
-        if (parsed) {
-            return resolveSingboxConfigTier(parsed);
-        }
+        if (parsed) return resolveSingboxConfigTier(parsed);
     }
-
     if (typeof userAgent === 'string' && userAgent) {
         const uaMatch = userAgent.match(/sing-box\/(\d+\.\d+(?:\.\d+)?)/i) || userAgent.match(/sing-box\s+(\d+\.\d+(?:\.\d+)?)/i);
         const versionString = uaMatch?.[1];
         const parsed = versionString ? parseSemverLike(versionString) : null;
-        if (parsed) {
-            return resolveSingboxConfigTier(parsed);
-        }
+        if (parsed) return resolveSingboxConfigTier(parsed);
     }
-
     return '1.12';
 }
 
 function getRequestHeader(request, name) {
-    if (!request || !name) {
-        return undefined;
-    }
-
+    if (!request || !name) return undefined;
     try {
         const value = request.header(name);
-        if (value !== undefined) {
-            return value;
-        }
-    } catch {
-        // Fallback if HonoRequest.header cannot read from the raw request.
-    }
-
+        if (value !== undefined) return value;
+    } catch {}
     const headers = request.raw?.headers;
-    if (!headers) {
-        return undefined;
-    }
-
+    if (!headers) return undefined;
     if (typeof headers.get === 'function') {
         return headers.get(name) ?? headers.get(name.toLowerCase()) ?? undefined;
     }
-
     if (typeof headers === 'object') {
         const lowerName = name.toLowerCase();
         const headerValue = headers[lowerName] ?? headers[name];
-        if (Array.isArray(headerValue)) {
-            return headerValue[0];
-        }
+        if (Array.isArray(headerValue)) return headerValue[0];
         return headerValue;
     }
-
     return undefined;
 }
 
 function requireShortLinkService(service) {
-    if (!service) {
-        throw new MissingDependencyError('Short link functionality is unavailable');
-    }
+    if (!service) throw new MissingDependencyError('Short link functionality is unavailable');
     return service;
 }
 
 function requireConfigStorage(service) {
-    if (!service) {
-        throw new MissingDependencyError('Config storage functionality is unavailable');
-    }
+    if (!service) throw new MissingDependencyError('Config storage functionality is unavailable');
     return service;
 }
 
