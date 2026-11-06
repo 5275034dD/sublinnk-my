@@ -3,7 +3,7 @@ import { createStableProviderName, deepCopy, tryDecodeSubscriptionLines, decodeB
 import { createTranslator } from '../i18n/index.js';
 import { generateRules, getOutbounds, PREDEFINED_RULE_SETS } from '../config/index.js';
 
-// 内部高兼容性 HY2 直通解析（备用兜底）
+// 内部高兼容性 HY2 直通解析
 function parseHysteria2Direct(urlStr) {
     try {
         const { addressPart, params, name } = parseUrlParams(urlStr);
@@ -97,37 +97,62 @@ export class BaseConfigBuilder {
                                 continue;
                             }
 
-                            // 🟢 核心增强：对远程订阅返回的内容进行 Base64 自动解码与分行提取
-                            const decodedLines = tryDecodeSubscriptionLines(content, { decodeUriComponent: true });
-                            const lineArray = Array.isArray(decodedLines) ? decodedLines : [decodedLines];
-
-                            for (const line of lineArray) {
-                                const cleanLine = typeof line === 'string' ? line.trim() : '';
-                                if (!cleanLine || !cleanLine.includes('://')) continue;
-
-                                let parsedProxy = null;
-                                if (cleanLine.startsWith('hy2://') || cleanLine.startsWith('hysteria2://') || cleanLine.startsWith('hysteria://')) {
-                                    parsedProxy = parseHysteria2Direct(cleanLine);
-                                } else {
-                                    parsedProxy = await ProxyParser.parse(cleanLine, this.userAgent);
+                            // 🟢 核心增强：对远程内容进行 Base64 深度解码
+                            let rawContent = content;
+                            try {
+                                const decoded = decodeBase64(content.replace(/\s+/g, ''));
+                                if (decoded && decoded.length > 0) {
+                                    rawContent = decoded;
                                 }
+                            } catch (_) {}
 
+                            // 🟢 暴力匹配：使用正则在整篇远程内容中直接提取所有 hy2:// 或 hysteria2:// 链接
+                            const hy2Regex = /(?:hy2|hysteria2):\/\/[^\s<>"']+/g;
+                            const matchedHy2Links = rawContent.match(hy2Regex) || [];
+                            for (const hy2Link of matchedHy2Links) {
+                                const parsedProxy = parseHysteria2Direct(hy2Link);
                                 if (parsedProxy) {
-                                    if (Array.isArray(parsedProxy)) {
-                                        parsedItems.push(...parsedProxy);
-                                    } else {
-                                        parsedItems.push(parsedProxy);
-                                    }
+                                    parsedItems.push(parsedProxy);
                                 }
                             }
 
-                            // 同时兼容 YAML/JSON 格式的订阅内容解析
+                            // 同时通过常规分行解析其他协议链接
+                            const lines = rawContent.split('\n').map(l => l.trim()).filter(Boolean);
+                            for (const line of lines) {
+                                if (!line.includes('://') || line.startsWith('hy2://') || line.startsWith('hysteria2://')) continue;
+                                const parsedProxy = await ProxyParser.parse(line, this.userAgent);
+                                if (parsedProxy) {
+                                    if (Array.isArray(parsedProxy)) parsedItems.push(...parsedProxy);
+                                    else parsedItems.push(parsedProxy);
+                                }
+                            }
+
+                            // 兼容 YAML/JSON 格式订阅
                             const { parseSubscriptionContent } = await import('../parsers/subscription/subscriptionContentParser.js');
-                            const subContentResult = parseSubscriptionContent(content);
+                            const subContentResult = parseSubscriptionContent(rawContent);
                             if (subContentResult && Array.isArray(subContentResult.proxies)) {
                                 subContentResult.proxies.forEach(p => {
                                     if (p && (p.tag || p.name)) {
-                                        parsedItems.push(p);
+                                        if (p.type === 'hysteria2' || p.type === 'hy2') {
+                                            parsedItems.push({
+                                                tag: p.name || p.tag,
+                                                type: 'hysteria2',
+                                                server: p.server,
+                                                server_port: p.port || p.server_port,
+                                                password: p.password || p.auth,
+                                                up: p.up,
+                                                down: p.down,
+                                                obfs: p.obfs ? { type: p.obfs, password: p['obfs-password'] } : undefined,
+                                                tls: {
+                                                    enabled: true,
+                                                    server_name: p.sni || p.server,
+                                                    insecure: !!p['skip-cert-verify']
+                                                },
+                                                alpn: p.alpn
+                                            });
+                                        } else {
+                                            parsedItems.push(p);
+                                        }
                                     }
                                 });
                             }
@@ -137,12 +162,10 @@ export class BaseConfigBuilder {
                     }
                     continue;
                 } 
-                // 2. 处理单条 hy2 / hysteria2 链接
+                // 2. 处理单条链接
                 else if (trimmedUrl.startsWith('hy2://') || trimmedUrl.startsWith('hysteria2://') || trimmedUrl.startsWith('hysteria://')) {
                     result = parseHysteria2Direct(trimmedUrl);
-                } 
-                // 3. 处理其他单条协议链接
-                else {
+                } else {
                     result = await ProxyParser.parse(trimmedUrl, this.userAgent);
                 }
 
