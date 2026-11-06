@@ -408,4 +408,4 @@ export class BaseConfigBuilder {
     formatConfig() {
         throw new Error('formatConfig must be implemented in child class');
     }
-}
+} 
