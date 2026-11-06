@@ -8,6 +8,7 @@ import { Footer } from '../components/Footer.jsx';
 import { UpdateChecker } from '../components/UpdateChecker.jsx';
 import { SingboxConfigBuilder } from '../builders/SingboxConfigBuilder.js';
 import { ClashConfigBuilder } from '../builders/ClashConfigBuilder.js';
+import { MihomoConfigBuilder } from '../builders/MihomoConfigBuilder.js';
 import { SurgeConfigBuilder } from '../builders/SurgeConfigBuilder.js';
 import { createTranslator, resolveLanguage } from '../i18n/index.js';
 import { encodeBase64, tryDecodeSubscriptionLines } from '../utils.js';
@@ -149,6 +150,56 @@ export function createApp(bindings = {}) {
             }
 
             const builder = new ClashConfigBuilder(
+                config,
+                selectedRules,
+                customRules,
+                baseConfig,
+                lang,
+                ua,
+                groupByCountry,
+                enableClashUI,
+                externalController,
+                externalUiDownloadUrl,
+                includeAutoSelect
+            );
+            await builder.build();
+            const userinfo = builder.getSubscriptionUserinfo();
+            const headers = { 'Content-Type': 'text/yaml; charset=utf-8' };
+            if (userinfo) {
+                headers['subscription-userinfo'] = userinfo;
+            }
+            return c.text(builder.formatConfig(), 200, headers);
+        } catch (error) {
+            return handleError(c, error, runtime.logger);
+        }
+    });
+
+    // 新增：Mihomo (Clash Meta) 专属订阅生成接口
+    app.get('/mihomo', async (c) => {
+        try {
+            const config = c.req.query('config');
+            if (!config) {
+                return c.text('Missing config parameter', 400);
+            }
+
+            const selectedRules = parseSelectedRules(c.req.query('selectedRules'));
+            const customRules = parseJsonArray(c.req.query('customRules'));
+            const ua = c.req.query('ua') || getRequestHeader(c.req, 'User-Agent') || DEFAULT_USER_AGENT;
+            const groupByCountry = parseBooleanFlag(c.req.query('group_by_country'));
+            const includeAutoSelect = c.req.query('include_auto_select') !== 'false';
+            const enableClashUI = parseBooleanFlag(c.req.query('enable_clash_ui'));
+            const externalController = c.req.query('external_controller');
+            const externalUiDownloadUrl = c.req.query('external_ui_download_url');
+            const configId = c.req.query('configId');
+            const lang = c.get('lang');
+
+            let baseConfig;
+            if (configId?.startsWith('mihomo_') || configId?.startsWith('clash_')) {
+                const storage = requireConfigStorage(services.configStorage);
+                baseConfig = await storage.getConfigById(configId);
+            }
+
+            const builder = new MihomoConfigBuilder(
                 config,
                 selectedRules,
                 customRules,
@@ -349,6 +400,7 @@ export function createApp(bindings = {}) {
     app.get('/s/:code', redirectHandler('surge'));
     app.get('/b/:code', redirectHandler('singbox'));
     app.get('/c/:code', redirectHandler('clash'));
+    app.get('/m/:code', redirectHandler('mihomo'));
     app.get('/x/:code', redirectHandler('xray'));
 
     app.post('/config', async (c) => {
@@ -382,13 +434,13 @@ export function createApp(bindings = {}) {
 
             const prefix = pathParts[1];
             const shortCode = pathParts[2];
-            if (!['b', 'c', 'x', 's'].includes(prefix)) return c.text(t('invalidShortUrl'), 400);
+            if (!['b', 'c', 'm', 'x', 's'].includes(prefix)) return c.text(t('invalidShortUrl'), 400);
 
             const shortLinks = requireShortLinkService(services.shortLinks);
             const originalParam = await shortLinks.resolveShortCode(shortCode);
             if (!originalParam) return c.text(t('shortUrlNotFound'), 404);
 
-            const mapping = { b: 'singbox', c: 'clash', x: 'xray', s: 'surge' };
+            const mapping = { b: 'singbox', c: 'clash', m: 'mihomo', x: 'xray', s: 'surge' };
             const originalUrl = `${urlObj.origin}/${mapping[prefix]}${originalParam}`;
             return c.json({ originalUrl });
         } catch (error) {
@@ -414,18 +466,14 @@ export function createApp(bindings = {}) {
 export function parseSelectedRules(raw) {
     if (!raw) return [];
 
-    // 首先检查是否是预设名称 (minimal, balanced, comprehensive)
-    // 这确保向后兼容主分支的 API 行为
     if (typeof raw === 'string' && PREDEFINED_RULE_SETS[raw]) {
         return PREDEFINED_RULE_SETS[raw];
     }
 
-    // 尝试解析为 JSON 数组
     try {
         const parsed = JSON.parse(raw);
         return Array.isArray(parsed) ? parsed : [];
     } catch {
-        // 解析失败，回退到 minimal 预设
         console.warn(`Failed to parse selectedRules: ${raw}, falling back to minimal`);
         return PREDEFINED_RULE_SETS.minimal;
     }
@@ -474,8 +522,6 @@ function isSingboxLegacyConfig(version) {
     return version.minor < 12;
 }
 
-// 1.14 swaps rule-set download_detour for http_client, which older clients
-// reject as an unknown field, so it needs its own config tier.
 function isSingboxModernConfig(version) {
     if (!version || Number.isNaN(version.major) || Number.isNaN(version.minor)) {
         return false;
@@ -521,52 +567,4 @@ function getRequestHeader(request, name) {
 
     try {
         const value = request.header(name);
-        if (value !== undefined) {
-            return value;
-        }
-    } catch {
-        // Fallback if HonoRequest.header cannot read from the raw request.
-    }
-
-    const headers = request.raw?.headers;
-    if (!headers) {
-        return undefined;
-    }
-
-    if (typeof headers.get === 'function') {
-        return headers.get(name) ?? headers.get(name.toLowerCase()) ?? undefined;
-    }
-
-    if (typeof headers === 'object') {
-        const lowerName = name.toLowerCase();
-        const headerValue = headers[lowerName] ?? headers[name];
-        if (Array.isArray(headerValue)) {
-            return headerValue[0];
-        }
-        return headerValue;
-    }
-
-    return undefined;
-}
-
-function requireShortLinkService(service) {
-    if (!service) {
-        throw new MissingDependencyError('Short link functionality is unavailable');
-    }
-    return service;
-}
-
-function requireConfigStorage(service) {
-    if (!service) {
-        throw new MissingDependencyError('Config storage functionality is unavailable');
-    }
-    return service;
-}
-
-function handleError(c, error, logger) {
-    if (error instanceof ServiceError) {
-        return c.text(error.message, error.status);
-    }
-    logger.error?.('Unhandled error', error);
-    return c.text(`Error: ${error.message}`, 500);
-}
+        if (value
