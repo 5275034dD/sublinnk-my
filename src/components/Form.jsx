@@ -10,6 +10,7 @@ const LINK_FIELDS = [
   { key: 'xray', labelKey: 'xrayLink' },
   { key: 'singbox', labelKey: 'singboxLink' },
   { key: 'clash', labelKey: 'clashLink' },
+  { key: 'mihomo', labelKey: 'mihomoLink' },
   { key: 'surge', labelKey: 'surgeLink' }
 ];
 
@@ -120,10 +121,10 @@ export const Form = (props) => {
         </div>
       </div>
 
-  {/* Advanced Options Content */ }
+  {/* Advanced Options Content */}
   <div x-show="showAdvanced" {...{'x-transition:enter': 'transition ease-out duration-300', 'x-transition:enter-start': 'opacity-0 transform -translate-y-4', 'x-transition:enter-end': 'opacity-100 transform translate-y-0', 'x-transition:leave': 'transition ease-in duration-200', 'x-transition:leave-start': 'opacity-100 transform translate-y-0', 'x-transition:leave-end': 'opacity-0 transform -translate-y-4'}} class="space-y-6">
 
-    {/* Rule Selection */ }
+    {/* Rule Selection */}
     <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
       <div class="flex items-center justify-between mb-4">
         <h3 class="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
@@ -157,10 +158,10 @@ export const Form = (props) => {
 
           </div>
 
-  {/* Custom Rules Component */ }
+  {/* Custom Rules Component */}
   <CustomRules t={t} />
 
-    {/* General Options */ }
+    {/* General Options */}
     <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
             <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
               <i class="fas fa-cog text-gray-400"></i>
@@ -239,7 +240,7 @@ export const Form = (props) => {
     </div>
   </div>
 
-  {/* Base Config */ }
+  {/* Base Config */}
   <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
             <div class="flex items-center justify-between mb-4">
               <h3 class="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
@@ -249,6 +250,7 @@ export const Form = (props) => {
               <select x-model="configType" class="px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700 text-sm font-medium text-gray-700 dark:text-gray-200 focus:ring-2 focus:ring-primary-500 focus:border-transparent">
                 <option value="singbox">SingBox (JSON)</option>
                 <option value="clash">Clash (YAML)</option>
+                <option value="mihomo">Mihomo (YAML)</option>
                 <option value="surge">Surge (JSON/INI)</option>
               </select>
           </div>
@@ -302,9 +304,9 @@ export const Form = (props) => {
   { t('clearConfig') }
               </button>
           </div>
-          </div >
+          </div>
 
-  {/* User Agent */ }
+  {/* User Agent */}
   <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
             <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
               <i class="fas fa-user-secret text-gray-400"></i>
@@ -319,7 +321,7 @@ export const Form = (props) => {
           </div>
         </div>
 
-  {/* Action Buttons */ }
+  {/* Action Buttons */}
   <div class="flex flex-col sm:flex-row gap-4">
           <button 
             type="submit" 
@@ -341,7 +343,7 @@ class="px-6 py-3.5 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 bo
         </div>
       </form>
 
-  {/* Results Section */ }
+  {/* Results Section */}
   <div x-cloak x-show="generatedLinks" x-data="{ copied: null }" {...{'x-transition:enter': 'transition ease-out duration-500', 'x-transition:enter-start': 'opacity-0 transform translate-y-8', 'x-transition:enter-end': 'opacity-100 transform translate-y-0'}} class="mt-12">
     <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-8 transition-all duration-300 hover:shadow-md">
       <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
@@ -357,7 +359,7 @@ class="px-6 py-3.5 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 bo
         {LINK_FIELDS.map((field) => (
           <div class="relative group" key={field.key}>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              {t(field.labelKey)}
+              {t(field.labelKey) === field.labelKey ? (field.key === 'mihomo' ? 'Mihomo 链接' : t(field.labelKey)) : t(field.labelKey)}
             </label>
             <div class="flex gap-2">
               <input
